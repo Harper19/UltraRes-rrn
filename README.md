@@ -44,4 +44,8 @@ GPL-3.0, see `LICENSE`. This follows the license of longread_umi, from which par
 
 ## Citation
 
-[Add the preprint / paper citation here.]
+If you use these scripts, please cite the preprint:
+
+> Bian K, Sudarshan AS, Meng Z, Yang J, Bachmann M, Bott C, Graham KE, Pinto AJ. High-accuracy hierarchical rRNA operon profiling resolves genomovar-level taxonomy and microdiversity using Nanopore sequencing. *bioRxiv* (2026). https://doi.org/10.64898/2026.06.01.729381
+
+and longread_umi (see Attribution).
