@@ -1,12 +1,5 @@
 # UltraRes-rrn
 
-Command logs for the analysis workflow used to generate UMI-based, full-length
-*rrn* operon consensus sequences from Oxford Nanopore data and to classify them taxonomically.
-
-> **Note:** the files in `scripts/` are annotated, step-by-step command logs from a SLURM cluster
-> (they are meant to be run block by block), not a single push-button pipeline.
-> Edit the path variables at the top of each file and the `YOUR_ACCOUNT` / e-mail placeholders
-> in the `#SBATCH` lines before use.
 
 ## Workflow
 
