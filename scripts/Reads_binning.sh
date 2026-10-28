@@ -4,17 +4,8 @@
 # meant to be run block by block rather than executed as one script).
 export PROJECT_DIR=/path/to/project      # working directory for this analysis
 export SOFTWARE_DIR=/path/to/software    # dorado, usearch, etc.
-export GROND_DIR=/path/to/GROND          # GROND database checkout (07_* scripts)
-export LOCAL_DATA=/path/to/local/data    # raw pod5 storage (03_* only)
-# SLURM: replace YOUR_ACCOUNT and your_email@example.com in the #SBATCH lines.
 # ---------------------------------------------------------------------------
 # reads binning using UMIs
-
-salloc -q inferno -A YOUR_ACCOUNT -N4 --ntasks-per-node=8 --time=2:30:00 --mem=64G
-module load anaconda3/2022.05
-pace-quota
-
-
 minLen=3500 
 maxLen=6000  
 Q=10
@@ -23,10 +14,10 @@ CUTADAPT=cutadapt
 BWA=bwa
 SAMTOOLS=samtools
 SEQTK=seqtk
-USEARCH=${SOFTWARE_DIR}/usearch11.0.667_i86linux32
+USEARCH=${SOFTWARE_DIR}/usearch
 OUT_DIR=${PROJECT_DIR}/01_UMI_ref_paired_end_Q${Q}_${minLen}_${maxLen}_$batch
 UMI_DIR=$OUT_DIR
-bar_list="01 02 03 04 05 06 07 08 09 10 11 12 13"
+bar_list=""
 
   
 ### Bin reads based on UMIs ----------------------------------------------------
@@ -46,7 +37,7 @@ UMI_MATCH_ERROR_SD=$(echo "3/2" | bc -l) # this is for Nanopore R10.3. Maybe nee
 RO_FRAC=0.3 #-O  Normalize read orientation fraction to 'O' if < 'O' reads are either +/- strand orientation.
 MAX_BIN_SIZE=10000000 # -N  Max number of reads with +/- orientation. [Default = 10000]
 BIN_CLUSTER_RATIO=20 #-S  UMI bin size/UMI cluster size cutoff. [Default = 10]
-# 衡量 UMI bin 的覆盖度是否合理：如果 ratio 很小：说明这个 UMI bin 的 reads 很少 → 可能噪声或低覆盖；如果 ratio 很大：说明 UMI bin 过度占用 reads → 可能是 PCR 放大偏差或重复
+# Checks whether UMI bin coverage is reasonable: a very small ratio means few reads in the UMI bin (possible noise or low coverage); a very large ratio means the bin takes up too many reads (possibly PCR amplification bias or duplicates)
 # conda install conda-forge::parallel -y
 GNUPARALLEL=parallel
 THREADS=4
@@ -190,7 +181,7 @@ do
   -v BIN_CLUSTER_RATIO="$BIN_CLUSTER_RATIO" \
   -v br="$br" \
   '
-## 处理第一个文件
+## Process the first file (UMI1 matches)
   NR==1 {
     print "[" strftime("%T") "] ### Read-UMI match filtering ###" > "/dev/stderr";
     print "[" strftime("%T") "] Reading UMI1 match file..." > "/dev/stderr";
@@ -220,7 +211,7 @@ do
     next;
   }
 
-## 处理第二个文件 
+## Process the second file (UMI2 matches) 
   FNR==1 {
    print "[" strftime("%T") "] Reading UMI2 match file..." > "/dev/stderr";
   }
@@ -251,8 +242,8 @@ do
     print "[" strftime("%T") "] UMI match filtering..." > "/dev/stderr"; 
     
     
-## 开始过滤
-  # 1. 基于error的过滤
+## Start filtering
+  # 1. Filter by UMI match error
     # Filter reads based on UMI match error
     for (umi in err1){    
       for (read in err1[umi]){
@@ -277,7 +268,7 @@ do
     }
     print "[" strftime("%T") "] Read orientation filtering..." > "/dev/stderr";
     
-  # 2. 基于方向性的过滤
+  # 2. Filter by read orientation
     # Count +/- strand reads
     for (s in match_umi){
       UM=match_umi[s]
@@ -336,7 +327,7 @@ do
 
     print "[" strftime("%T") "] UMI match error filtering..." > "/dev/stderr";
     
-  # 3. 基于error SD的过滤
+  # 3. Filter by the SD of the UMI match error
     # Calculate UME stats
     for (s in ror_filt){
       UM=ror_filt[s]
@@ -358,7 +349,7 @@ do
       }
     }
 
-  # 4. 基于UMI bin/cluster size的过滤
+  # 4. Filter by UMI bin / cluster size ratio
     print "[" strftime("%T") "] UMI bin/cluster size ratio filtering..." > "/dev/stderr";
     for (u in umi_n){
       CLUSTER_SIZE=u
@@ -371,7 +362,7 @@ do
       }
     }
 
-## 打印文件 binning stats
+## Write binning statistics
     # Print filtering stats
     print "umi_name", "read_n_raw", "read_n_filt", "read_n_plus", "read_n_neg", \
       "read_max_plus", "read_max_neg", "read_orientation_ratio", "ror_filter", \
@@ -440,13 +431,7 @@ do
       NR%4==2{print $0}
     ' > $UMI_DIR/${br}_sumi.fa
 
-  # grep "^@" $UMI_DIR/${br}_reads_tf_start.fq | wc -l   
-  # grep "^>" $UMI_DIR/${br}_sumi_u.fa | wc -l
-  #    cat \
-  # $UMI_DIR/${br}_reads_tf_start.fq \
-  #   <($SEQTK seq -r $UMI_DIR/${br}_reads_tf_end.fq) | wc -l
-  # grep "^>" $UMI_DIR/${br}_sumi.fa | wc -l # barcode24: 2128007 (0.2) -> 1962513 (0.3) —>2062842 (0.1)
-    
+
   $USEARCH -threads 32 \
     -fastx_uniques $UMI_DIR/${br}_sumi.fa \
     -fastaout $UMI_DIR/${br}_sumi_u.fa \
@@ -494,7 +479,7 @@ do
    $UMI_DIR/${br}_sumi_f.fa \
    $UMI_DIR/${br}_sumi_frc.fa \
    $UMI_DIR/${br}_umi12u.fa \
-   > $UMI_DIR/${br}_umi12uf.fa    # umi1 和它的rc在unique umi pair中均出现，则真实存在
+   > $UMI_DIR/${br}_umi12uf.fa    # a UMI pair is retained only if both umi1 and its reverse complement occur among the unique UMI pairs
 done
 }
 
@@ -525,215 +510,3 @@ do
     }
   }' $f | sort -n | uniq -c
 done
-## 10 gb
-# === barcode12_umi1_map.sam ===
-#    1973 0
-#     155 1
-#      27 2
-#      10 3
-# === barcode12_umi2_map.sam ===
-#    1968 0
-#     150 1
-#      36 2
-#      11 3
- 
-## 20 Gb
-# === barcode12_umi1_map.sam ===
-#    1861 0
-#     211 1
-#      57 2
-#      17 3
-# === barcode12_umi2_map.sam ===
-#    1843 0
-#     222 1
-#      66 2
-#      19 3
-
-
-ll -h *umi_bin_map.txt
-ll *_umi_binning_stats.txt
-
-
-
-head $BINNING_DIR/${br}_reads_tf_umi1.fa
-head $UMI_DIR/${br}_umi12uf.fa
-tail $UMI_DIR/${br}_umi12uf.fa
-br=barcode12
-for bn in $bar_list #统计 UMI 提取和过滤 pipeline 各阶段剩余的 read / UMI 数量
-do
-  br=barcode$bn
-  echo $br
-  # Total forward read (umi1 region) counts (reads_tf_umi1)
-  # grep "^>" $BINNING_DIR/${br}_reads_tf_umi1.fa | wc -l
-  # Total single UMI  (sumi)
-  grep "^>" $UMI_DIR/${br}_sumi.fa | wc -l
-  # pattern corrected forward UMI (sumi_f)
-  grep "^>" $UMI_DIR/${br}_sumi_f.fa | wc -l
-  # unique UMI pairs (umi12u)
-  grep "^>" $UMI_DIR/${br}_umi12u.fa | wc -l
-  # grep "^>" $UMI_DIR/${br}_sumi_frc.fa | wc -l
-  # umi1 和 umi1 的rc都出现过的umi pair
-  grep "^>" $UMI_DIR/${br}_umi12uf.fa | wc -l
-  grep "^>" $UMI_DIR/${br}_umi_ref.fa | wc -l 
-done
-# barcode01
-# 182741
-# 7752
-# 6084
-# 5646
-# 1284
-# barcode02
-# 45029
-# 2017
-# 1332
-# 1201
-# 303
-# barcode03
-# 133404
-# 6347
-# 4647
-# 4376
-# 1274
-# barcode04
-# 184031
-# 7788
-# 5865
-# 5449
-# 1314
-# barcode05
-# 313044
-# 14559
-# 11647
-# 10978
-# 2763
-# barcode06
-# 376171
-# 15110
-# 12130
-# 11397
-# 2248
-# barcode07
-# 222448
-# 8755
-# 6641
-# 6254
-# 1526
-# barcode08
-# 270962
-# 10687
-# 8161
-# 7629
-# 1680
-# barcode09
-# 78598
-# 4081
-# 2962
-# 2758
-# 652
-# barcode10
-# 152655
-# 7892
-# 5550
-# 5262
-# 1631
-# barcode11
-# 139603
-# 7133
-# 5404
-# 5019
-# 1139
-# barcode12
-# 92704
-# 5281
-# 3628
-# 3407
-# 1085
-# barcode13
-# 263
-# 226
-# 42
-# 33
-# grep: ${PROJECT_DIR}/01_UMI_ref_paired_end_Q10_3000_7000_1/barcode13_umi_ref.fa: No such file or directory
-# 0
-
-
-## 20 Gb
-# barcode01
-# 360588
-# 12431
-# 10136
-# 9432
-# 1196
-# barcode02
-# 84843
-# 3219
-# 2215
-# 2046
-# 288
-# barcode03
-# 263452
-# 9810
-# 7719
-# 7237
-# 1193
-# barcode04
-# 358110
-# 12500
-# 10068
-# 9374
-# 1241
-# barcode05
-# 619880
-# 22854
-# 19690
-# 18475
-# 2568
-# barcode06
-# 739758
-# 24752
-# 20853
-# 19519
-# 2053
-# barcode07
-# 440381
-# 14093
-# 11502
-# 10643
-# 1456
-# barcode08
-# 528761
-# 17205
-# 14021
-# 13009
-# 1536
-# barcode09
-# 148142
-# 6217
-# 4586
-# 4235
-# 603
-# barcode10
-# 297590
-# 12048
-# 9254
-# 8703
-# 1518
-# barcode11
-# 269752
-# 11305
-# 8919
-# 8327
-# 1059
-# barcode12
-# 178150
-# 7869
-# 5852
-# 5454
-# 1076
-# barcode13
-# 472
-# 428
-# 83
-# 67
-# 1
-

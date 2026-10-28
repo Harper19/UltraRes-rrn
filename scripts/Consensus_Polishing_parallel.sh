@@ -4,60 +4,23 @@
 # meant to be run block by block rather than executed as one script).
 export PROJECT_DIR=/path/to/project      # working directory for this analysis
 export SOFTWARE_DIR=/path/to/software    # dorado, usearch, etc.
-export GROND_DIR=/path/to/GROND          # GROND database checkout (07_* scripts)
-export LOCAL_DATA=/path/to/local/data    # raw pod5 storage (03_* only)
-# SLURM: replace YOUR_ACCOUNT and your_email@example.com in the #SBATCH lines.
 # ---------------------------------------------------------------------------
-# # parallel script
-# salloc -q inferno -A YOUR_ACCOUNT -N4 --ntasks-per-node=8 --time=2:30:00 --mem=64G
-# module load anaconda3/2022.05
-# pace-quota
+# GPU: this step (racon + medaka polishing) was run on a GPU node (NVIDIA V100, 32 GB memory per GPU in this study);
+# medaka inference uses the GPU.
 
 cd ${PROJECT_DIR}/
 batch=1
-bar_list="01 02 03 04 05 06 07 08 09 10 11 12 13"
+bar_list=""
 minLen=3500
 maxLen=6000  
 Q=10
 OUT_DIR=${PROJECT_DIR}/01_UMI_ref_paired_end_Q${Q}_${minLen}_${maxLen}_$batch
 
-mkdir ${PROJECT_DIR}/Scripts/
-salloc -A YOUR_ACCOUNT -N1 --mem-per-gpu=12G -qinferno -t0:15:00 --gres=gpu:H100:1
-module load anaconda3/2022.05                   # Load module dependencies
 conda activate rrUMI_2
-# SLURM_ARRAY_TASK=1
-{
-script_polish_array="${PROJECT_DIR}/Scripts/6_Consensus_polish_array_$batch.sbatch"
-echo -n "" > $script_polish_array # 清空文件
-touch $script_polish_array #创建新文件 or 更新时间戳
-
-# 输入文件内容
-cat > $script_polish_array << \EOF
-#!/bin/bash
-#SBATCH -J02_racon_medaka_polish_GPU                            # Job name
-#SBATCH --account=YOUR_ACCOUNT                 # charge account
-#SBATCH -N1            # Number of nodes and cores per node required
-#SBATCH --gres=gpu:V100:1                # GPU type (V100) and number of GPUs 
-#SBATCH --mem-per-gpu=32G                        # Memory per core
-#SBATCH -t3:00:00                              # Duration of the job (Ex: integrate:15 mins,D-HH:MM:SS for days, hours, minutes, and seconds requested)
-#SBATCH -qinferno                               # QOS Name
-#SBATCH -oReport-polish_drep%j.out                         # Combined output and error messages file
-#SBATCH --mail-type=START,END,FAIL              # Mail preferencespac
-#SBATCH --mail-user=your_email@example.com        # E-mail address for notifications
-#SBATCH --array=1-13%4 # 最多同时运行4个barcode
-# module load gcc
-module load cuda
-module load anaconda3/2022.05
-
-# #---------------------------------------------------------------- Variables --------------------------------------------------------------- 
-# echo "SLURM_ARRAY_TASK_ID:"$SLURM_ARRAY_TASK_ID
-# br=barcode$(($SLURM_ARRAY_TASK_ID))
-echo "SLURM_ARRAY_TASK_ID" $SLURM_ARRAY_TASK_ID
-bn=$(printf "%02d" $(($SLURM_ARRAY_TASK_ID)))
+# Barcode to process. This step was originally run as a job array (one barcode per task):
+bn=01
 br=barcode${bn}
-
 echo $br
-# br=barcode20
 batch=1
 
 ############################################################## 0. consens UMI ############################################################## 
@@ -69,7 +32,7 @@ CUTADAPT=cutadapt
 BWA=bwa
 SAMTOOLS=samtools
 SEQTK=seqtk
-USEARCH=${SOFTWARE_DIR}/usearch11.0.667_i86linux32
+USEARCH=${SOFTWARE_DIR}/usearch
 OUT_DIR=${PROJECT_DIR}/01_UMI_ref_paired_end_Q${Q}_${minLen}_${maxLen}_$batch
 UMI_DIR=$OUT_DIR
 
@@ -91,7 +54,7 @@ UMI_MATCH_ERROR_SD=$(echo "3/2" | bc -l) # this is for Nanopore R10.3. Maybe nee
 RO_FRAC=0.3 #-O  Normalize read orientation fraction to 'O' if < 'O' reads are either +/- strand orientation.
 MAX_BIN_SIZE=10000 # -N  Max number of reads with +/- orientation. [Default = 10000]
 BIN_CLUSTER_RATIO=20 #-S  UMI bin size/UMI cluster size cutoff. [Default = 10]
-# 衡量 UMI bin 的覆盖度是否合理：如果 ratio 很小：说明这个 UMI bin 的 reads 很少 → 可能噪声或低覆盖；如果 ratio 很大：说明 UMI bin 过度占用 reads → 可能是 PCR 放大偏差或重复
+# Checks whether UMI bin coverage is reasonable: a very small ratio means few reads in the UMI bin (possible noise or low coverage); a very large ratio means the bin takes up too many reads (possibly PCR amplification bias or duplicates)
 # conda install conda-forge::parallel -y
 GNUPARALLEL=parallel
 THREADS=4
@@ -122,7 +85,7 @@ UMI_DIR=$OUT_DIR
 conda activate seqtk
 cd ${PROJECT_DIR}/02_read_binning_Q${Q}_${minLen}_${maxLen}_$batch
 # Wrapper
-# 从一个 UMI bin 的原始 reads 中自动挑选“代表性种子序列”，并通过多轮 racon 矫正生成高精度的 consensus（共识序列），用于后续分析。
+# Select a representative seed sequence from the raw reads of one UMI bin and polish it with several rounds of racon to generate a high-accuracy consensus sequence for downstream analysis.
 seed_racon () {
   # Input
   local RB=$1 # $IN Directory containing UMI read bins in the format'umi*bins.fastq'.
@@ -147,7 +110,7 @@ seed_racon () {
   ${SOFTWARE_DIR}/usearch11.0.667_i86linux32 -cluster_fast $RB -id 0.9 -strand both\
     -sizeout -centroids $OUT/${UMINO}_centroids.fa
   # ${SOFTWARE_DIR}/usearch11.0.667_i86linux32 -cluster_fast $RB -id 0.75 -strand both\
-  #   -sizeout -centroids $OUT/${UMINO}_centroids.fa # 旧的参数，会有差异很大的reads bin在一起
+  #   -sizeout -centroids $OUT/${UMINO}_centroids.fa # old setting: very different reads could end up in the same bin
   ${SOFTWARE_DIR}/usearch11.0.667_i86linux32 -sortbysize $OUT/${UMINO}_centroids.fa -topn 1 \
     -fastaout $OUT/${UMINO}_sr.fa -relabel seed
 
@@ -202,9 +165,9 @@ RACON_ARG="--no-trimming"
 
   #Collect seed-racon consensus sequences
   echo "Collect consensus sequences"
-  OUT_NAME=${OUT##*/} # 只保留最后的文件名not full path
+  OUT_NAME=${OUT##*/} # keep only the file name, not the full path
   echo $OUT_NAME
-  OUT_NAME=${OUT_NAME%.*} # 去掉后缀
+  OUT_NAME=${OUT_NAME%.*} # remove the file extension
   echo $OUT_NAME
 
   find $OUT/ \
@@ -220,32 +183,7 @@ echo $OUT/consensus_${OUT_NAME}.fa
 ############################## ############################## ##############################
 ############################## 2. Medaka polish ##############################
 ############################## ############################## ##############################
-# conda create -n  rrUMI_2 python=3.12 minimap2 seqtk racon -y
-# conda activate rrUMI_2
-# conda install parallel cutadapt gawk samtools bwa -y
-# pip install medaka==2.1.1
-# pip install pyabpoa
-# medaka --version
-
 conda activate rrUMI_2
-
-#
-# # olishing of UMI consensus sequences (ONT data only). The racon-polished ONT consensus sequences were further polished individually by using all reads in each UMI bin and one round of Medaka (v.1.0.1) (https://github.com/nanoporetech/ medaka) with the commands Medaka mini_align -m and Medaka consensus --model r103_min_high_g360 --chunk_len 6,000 (ONT R10.3) or Medaka consensus --model r941_min_high_g360 --chunk_len 6,000 (ONT R9.4.1).
-#     -c  File containing consensus sequences.CONSENSUS_FILE=$OPTARG;;
-#     -m  Medaka model. MEDAKA_MODEL=$OPTARG;;
-#     -l  Expected minimum chunk size. [Default = 6000]CHUNK_SIZE=$OPTARG;;
-#     -d  Directory containing UMI read bins in the format
-#         'umi*bins.fastq'. Recursive search. BINNING_DIR=$OPTARG;;
-#     -o  Output directory.OUT_DIR=$OPTARG;;
-#     -t  Number of threads to use.THREADS=$OPTARG;;
-#     -n  Process n number of bins. If not defined all bins
-#         are processed. SAMPLE=$OPTARG;;
-#     -T  Number of Medaka jobs to run. [Default = 1].MEDAKA_JOBS=$OPTARG;;
-#
-#
-### Medaka polishing assembly -------------------------------------------------
-echo "----------------------------------------------1. Medaka polishing assembly -------------------------------------------------"
-echo "-------------------------------------------------------------------------------------------------------------------------"
 THREADS=32
 MEDAKA_JOBS=16
 # Format names
@@ -254,12 +192,6 @@ echo "OUT_NAME:"$OUT_NAME
 # Medaka jobs
 MEDAKA_THREADS=$(( THREADS/MEDAKA_JOBS ))
 CHUNK_SIZE=6000
-
-
-
-# # Start medaka environment if relevant
-# eval "$MEDAKA_ENV_START"
-
 
 medaka_align() {
   # Input
@@ -285,8 +217,8 @@ medaka_align() {
 }
 export -f medaka_align
 
-  # 把某个 UMI bin 的 reads (UMI_BIN) 比对到它的初始 consensus (UMI_NAME.fa)
-  # 输出 .bam 文件，存在 $OUT_DIR/mapping/UMI_NAME/ 下
+  # Align the reads of one UMI bin (UMI_BIN) to its initial consensus (UMI_NAME.fa)
+  # Output: a .bam file stored under $OUT_DIR/mapping/UMI_NAME/
 
 # Calculate consensus probabilities--------------------------
 echo "----------------------------------------------Calculate consensus probabilities--------------------------"
@@ -416,13 +348,6 @@ MEDEKA_ROUND=1
 
 
 
-EOF
-}
-# rm Report*
-cd ${PROJECT_DIR}/02_read_binning_Q${Q}_${minLen}_${maxLen}_$batch
-sbatch $script_polish_array  # 4028940 (3-13) 4029178 (1-2) 4030052 (2-13) 4030061(1) 4085943 (25 Gb) 4246381 (25Gb-failed) 4255405
-squeue -u $USER
-pace-quota
 
 # compare raw read, consensus, medaka polished consensus.
 for bn in $bar_list
@@ -440,17 +365,3 @@ do
   mq="${PROJECT_DIR}/02_read_binning_Q${Q}_${minLen}_${maxLen}_$batch/${br}_consensus_hdf_1/consensus_${br}_stitch.fa"
   grep "^>" $mq | wc -l
 done
-
-
-
-
-
-
-
-
-
-
-
-
-
-
